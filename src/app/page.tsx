@@ -1,7 +1,10 @@
-export default function Home() {
-  return (
-    <main className="flex min-h-screen items-center justify-center">
-      <p className="text-gray-500 text-sm">瞬読 — 準備中</p>
-    </main>
-  );
+import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
+import { LIFF_COOKIE_NAME, verifyCookieValue } from '@/lib/session';
+
+export default async function RootPage() {
+  const cookieStore = await cookies();
+  const cookie = cookieStore.get(LIFF_COOKIE_NAME);
+  const lineUserId = cookie ? verifyCookieValue(cookie.value) : null;
+  redirect(lineUserId ? '/home' : '/login');
 }
