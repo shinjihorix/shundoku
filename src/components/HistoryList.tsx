@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import {
   Trash2, ChevronDown, ChevronUp, Loader2, BookOpen,
   Play, Pause, Square, Volume2, Camera, Merge, Search, X, RefreshCw,
-  FileText, Eye, EyeOff, AlertTriangle, ScanLine, CheckCircle2,
+  FileText, Eye, EyeOff, CheckCircle2,
 } from 'lucide-react';
 
 interface SummaryItem {
@@ -26,85 +26,11 @@ interface BookGroup {
   latestDate: Date;
 }
 
-interface PageGap {
-  from: number;
-  to: number;
-}
-
 type AudioState = 'idle' | 'loading' | 'playing' | 'paused';
 
 const MAX_PX = 800;
 const JPEG_QUALITY = 0.82;
 
-// ─── ページ番号解析ユーティリティ ────────────────────────────
-function extractPageNumbers(rawText: string): number[] {
-  const found = new Set<number>();
-
-  for (const line of rawText.split('\n')) {
-    const t = line.trim();
-    if (!t) continue;
-
-    // 行全体が数字のみ（例: "5"、"— 5 —"、"- 5 -"）
-    const standalone = t.match(/^[-─—\s]*(\d{1,4})[-─—\s]*$/);
-    if (standalone) { addPage(found, standalone[1]); continue; }
-
-    // "p.5" / "pp.5" / "p 5"
-    const pDot = t.match(/\bpp?\.?\s*(\d{1,4})\b/i);
-    if (pDot) { addPage(found, pDot[1]); }
-
-    // "5ページ" / "第5ページ"
-    const jpPage = t.match(/(?:第\s*)?(\d{1,4})\s*ページ/);
-    if (jpPage) { addPage(found, jpPage[1]); }
-  }
-
-  // 外れ値除去：中央値から100ページ以上離れた値を除外
-  // （本文中の金額・番号が単独行に現れた場合の誤検出対策）
-  const arr = Array.from(found).sort((a, b) => a - b);
-  if (arr.length < 3) return arr;
-  const median = arr[Math.floor(arr.length / 2)];
-  const filtered = arr.filter((n) => Math.abs(n - median) <= 100);
-  return filtered.length >= 2 ? filtered : arr;
-}
-
-function addPage(set: Set<number>, str: string) {
-  const n = parseInt(str, 10);
-  if (n >= 1 && n <= 2000) set.add(n);
-}
-
-/** ページ番号のリストからギャップ（抜け）を検出する */
-function findPageGaps(pages: number[], threshold = 3): PageGap[] {
-  if (pages.length < 2) return [];
-  const gaps: PageGap[] = [];
-  for (let i = 0; i < pages.length - 1; i++) {
-    const diff = pages[i + 1] - pages[i];
-    if (diff > threshold + 1) {
-      gaps.push({ from: pages[i] + 1, to: pages[i + 1] - 1 });
-    }
-  }
-  return gaps;
-}
-
-/** 全章の raw_text からページカバレッジを集計 */
-function analyzePageCoverage(parts: SummaryItem[]): {
-  allPages: number[];
-  gaps: PageGap[];
-  minPage: number | null;
-  maxPage: number | null;
-} {
-  const all: number[] = [];
-  for (const p of parts) {
-    if (p.raw_text) all.push(...extractPageNumbers(p.raw_text));
-  }
-  const unique = Array.from(new Set(all)).sort((a, b) => a - b);
-  const gaps = findPageGaps(unique);
-  return {
-    allPages: unique,
-    gaps,
-    minPage: unique[0] ?? null,
-    maxPage: unique[unique.length - 1] ?? null,
-  };
-}
-// ─────────────────────────────────────────────────────────────
 
 async function compressCover(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -143,108 +69,38 @@ function MergeConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  const { gaps, minPage, maxPage } = useMemo(
-    () => analyzePageCoverage(group.parts),
-    [group.parts],
-  );
-  const hasGaps = gaps.length > 0;
-  const hasCoverage = minPage !== null;
-
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end justify-center p-4">
       <div className="bg-white rounded-2xl p-5 w-full max-w-sm space-y-4 max-h-[90vh] overflow-y-auto">
 
         {/* Title */}
-        <div className="flex items-start gap-3">
-          <AlertTriangle size={20} className={`shrink-0 mt-0.5 ${hasGaps ? 'text-red-500' : 'text-amber-500'}`} />
-          <div>
-            <p className="text-sm font-semibold text-gray-800">
-              {hasGaps ? 'ページの抜けが見つかりました' : '全章をまとめて要約しますか？'}
-            </p>
-            {hasCoverage && (
-              <p className="text-xs text-gray-500 mt-0.5">
-                取り込み済み: {minPage}〜{maxPage}ページ
-              </p>
-            )}
-          </div>
-        </div>
+        <p className="text-sm font-semibold text-gray-800">全パートをまとめて要約しますか？</p>
 
-        {/* Gap warnings */}
-        {hasGaps && (
-          <div className="bg-red-50 rounded-xl px-3 py-2.5 space-y-1.5">
-            <p className="text-xs font-semibold text-red-700 flex items-center gap-1">
-              <ScanLine size={12} />以下のページが取り込まれていません
-            </p>
-            {gaps.map((g, i) => (
-              <p key={i} className="text-xs text-red-600 font-medium">
-                · {g.from === g.to ? `${g.from}ページ` : `${g.from}〜${g.to}ページ`}
-                <span className="text-red-400 font-normal ml-1">
-                  （{g.to - g.from + 1}ページ分）
-                </span>
-              </p>
-            ))}
-            <p className="text-[10px] text-red-500 mt-1">
-              スキャンタブで不足ページを取り込んでからまとめることを推奨します
-            </p>
-          </div>
-        )}
-
-        {/* Chapter list */}
+        {/* Part list */}
         <div className="bg-gray-50 rounded-xl px-3 py-2.5 space-y-1.5">
-          <p className="text-[10px] text-gray-500 font-semibold mb-1">取り込み済みの章</p>
-          {group.parts.map((p, i) => {
-            const pages = p.raw_text ? extractPageNumbers(p.raw_text) : [];
-            const pageRange = pages.length >= 2
-              ? `${pages[0]}〜${pages[pages.length - 1]}p`
-              : pages.length === 1 ? `${pages[0]}p` : 'ページ番号未検出';
-            return (
-              <p key={p.id} className="text-xs text-gray-600 flex items-center gap-1.5">
-                <CheckCircle2 size={11} className="text-green-500 shrink-0" />
-                第{i + 1}章 · {p.image_count}枚 · {pageRange}
-              </p>
-            );
-          })}
+          <p className="text-[10px] text-gray-500 font-semibold mb-1">取り込み済みのパート</p>
+          {group.parts.map((p, i) => (
+            <p key={p.id} className="text-xs text-gray-600 flex items-center gap-1.5">
+              <CheckCircle2 size={11} className="text-green-500 shrink-0" />
+              パート{i + 1} · {p.image_count}枚
+            </p>
+          ))}
         </div>
-
-        {!hasCoverage && (
-          <p className="text-xs text-gray-400 text-center">
-            文字起こしからページ番号を検出できませんでした
-          </p>
-        )}
 
         {/* Actions */}
-        <div className="flex flex-col gap-2">
-          {hasGaps ? (
-            <>
-              <button
-                onClick={onCancel}
-                className="w-full py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold flex items-center justify-center gap-1.5"
-              >
-                <ScanLine size={15} />不足ページをスキャンする
-              </button>
-              <button
-                onClick={onConfirm}
-                className="w-full py-2 rounded-xl border border-gray-200 text-sm text-gray-500"
-              >
-                抜けがあるまままとめる
-              </button>
-            </>
-          ) : (
-            <div className="flex gap-2">
-              <button
-                onClick={onCancel}
-                className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-600 font-semibold"
-              >
-                キャンセル
-              </button>
-              <button
-                onClick={onConfirm}
-                className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold"
-              >
-                まとめて要約する
-              </button>
-            </div>
-          )}
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-600 font-semibold"
+          >
+            キャンセル
+          </button>
+          <button
+            onClick={onConfirm}
+            className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold"
+          >
+            まとめて要約する
+          </button>
         </div>
       </div>
     </div>
@@ -460,9 +316,6 @@ export default function HistoryList() {
         const dateStr = group.latestDate.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' });
         const inputId = `cover-input-${group.key}`;
 
-        // ページギャップをカードヘッダーにも表示
-        const coverage = isMultiPart ? analyzePageCoverage(group.parts) : null;
-        const hasGaps = (coverage?.gaps.length ?? 0) > 0;
 
         return (
           <div key={group.key} className="bg-white rounded-2xl shadow-sm overflow-hidden">
@@ -486,9 +339,8 @@ export default function HistoryList() {
                 <p className="text-sm font-semibold text-gray-800 truncate">{group.title || '無題'}</p>
                 <p className="text-xs text-gray-400 mt-0.5 flex flex-wrap gap-1 items-center">
                   {dateStr} · {group.totalImages}枚
-                  {isMultiPart && <span className="bg-indigo-100 text-indigo-600 rounded-full px-1.5 py-0.5 text-[10px] font-semibold">{group.parts.length}章</span>}
+                  {isMultiPart && <span className="bg-indigo-100 text-indigo-600 rounded-full px-1.5 py-0.5 text-[10px] font-semibold">{group.parts.length}パート</span>}
                   {!allHaveSummary && <span className="bg-amber-100 text-amber-600 rounded-full px-1.5 py-0.5 text-[10px] font-semibold">文字起こし</span>}
-                  {hasGaps && <span className="bg-red-100 text-red-600 rounded-full px-1.5 py-0.5 text-[10px] font-semibold">ページ抜け</span>}
                 </p>
               </button>
 
@@ -501,23 +353,6 @@ export default function HistoryList() {
             {isOpen && (
               <div className="border-t border-gray-50">
 
-                {/* ページカバレッジサマリー（複数章のみ） */}
-                {isMultiPart && coverage && coverage.minPage !== null && (
-                  <div className={`mx-4 mt-3 rounded-xl px-3 py-2 ${hasGaps ? 'bg-red-50' : 'bg-green-50'}`}>
-                    <p className={`text-xs font-semibold ${hasGaps ? 'text-red-700' : 'text-green-700'}`}>
-                      {hasGaps ? '⚠ ページの抜けあり' : '✓ ページ連続確認済み'}
-                      <span className="font-normal ml-1.5 text-gray-500">
-                        （{coverage.minPage}〜{coverage.maxPage}ページ取り込み済み）
-                      </span>
-                    </p>
-                    {hasGaps && coverage.gaps.map((g, i) => (
-                      <p key={i} className="text-xs text-red-600 mt-0.5">
-                        · {g.from === g.to ? `${g.from}ページ` : `${g.from}〜${g.to}ページ`}が未取り込み
-                      </p>
-                    ))}
-                  </div>
-                )}
-
                 {/* Merge button */}
                 {isMultiPart && (
                   <div className="px-4 py-3 border-b border-gray-50">
@@ -528,10 +363,10 @@ export default function HistoryList() {
                     ) : (
                       <button
                         onClick={() => setConfirmMergeGroup(group)}
-                        className={`flex items-center gap-2 w-full px-3 py-2.5 rounded-xl text-white text-xs font-semibold active:scale-95 transition-transform justify-center ${hasGaps ? 'bg-red-500' : 'bg-indigo-600'}`}
+                        className="flex items-center gap-2 w-full px-3 py-2.5 rounded-xl text-white text-xs font-semibold active:scale-95 transition-transform justify-center bg-indigo-600"
                       >
                         <Merge size={14} />
-                        {hasGaps ? 'ページ抜けあり・確認してまとめる' : `全${group.parts.length}章をまとめて要約する`}
+                        {`全${group.parts.length}パートをまとめて要約する`}
                       </button>
                     )}
                   </div>
@@ -546,18 +381,14 @@ export default function HistoryList() {
                   const rawExpanded = expandedRawText.has(item.id);
                   const summaryLines = item.summary?.split('\n').map((l) => l.trim()).filter(Boolean) ?? [];
                   const partDate = new Date(item.created_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' });
-                  const partPages = hasRawText ? extractPageNumbers(item.raw_text!) : [];
-                  const pageRange = partPages.length >= 2
-                    ? `${partPages[0]}〜${partPages[partPages.length - 1]}p`
-                    : partPages.length === 1 ? `${partPages[0]}p` : '';
 
                   return (
                     <div key={item.id} className={`px-4 py-3 space-y-2 ${idx < group.parts.length - 1 ? 'border-b border-gray-50' : ''}`}>
                       {isMultiPart && (
                         <p className="text-[11px] font-semibold text-indigo-500">
-                          第{idx + 1}章
+                          パート{idx + 1}
                           <span className="text-gray-400 font-normal ml-1.5">
-                            {partDate} · {item.image_count}枚{pageRange && ` · ${pageRange}`}
+                            {partDate} · {item.image_count}枚
                           </span>
                         </p>
                       )}
@@ -568,7 +399,6 @@ export default function HistoryList() {
                           <button onClick={() => toggleRawText(item.id)} className="flex items-center gap-1 text-[11px] text-indigo-500 font-semibold mb-1">
                             {rawExpanded ? <EyeOff size={11} /> : <Eye size={11} />}
                             {rawExpanded ? '文字起こしを閉じる' : '文字起こしを確認する'}
-                            {pageRange && <span className="text-gray-400 font-normal">（{pageRange}）</span>}
                           </button>
                           {rawExpanded && (
                             <div className="max-h-60 overflow-y-auto rounded-xl bg-gray-50 px-3 py-2.5 mb-2">
@@ -618,7 +448,7 @@ export default function HistoryList() {
                       {!hasSummary && !isMultiPart && hasRawText && (
                         <button onClick={() => generateSummary(item)} disabled={isGenerating}
                           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-semibold active:scale-95 transition-transform disabled:opacity-50">
-                          {isGenerating ? <><Loader2 size={13} className="animate-spin" />要約生成中...</> : <><RefreshCw size={13} />この章の要約を生成</>}
+                          {isGenerating ? <><Loader2 size={13} className="animate-spin" />要約生成中...</> : <><RefreshCw size={13} />このパートの要約を生成</>}
                         </button>
                       )}
 
@@ -630,7 +460,7 @@ export default function HistoryList() {
                         )}
                         <button onClick={() => deleteItem(item.id)} disabled={deleting === item.id} className="flex items-center gap-1 text-xs text-red-400 hover:text-red-600 disabled:opacity-50">
                           {deleting === item.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                          {isMultiPart ? 'この章を削除' : '削除'}
+                          {isMultiPart ? 'このパートを削除' : '削除'}
                         </button>
                       </div>
                     </div>

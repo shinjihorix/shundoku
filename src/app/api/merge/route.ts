@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
 
   let body: {
     ids: string[];
-    summaries: string[];    // fallback if no raw_text
+    summaries: string[];  // fallback when no raw_text
     title?: string;
     cover_image?: string;
     total_images: number;
@@ -31,34 +31,36 @@ export async function POST(request: NextRequest) {
 
   const admin = createAdminClient();
 
-  // Fetch raw_texts from DB (server-side, no need to send from client)
+  // Fetch raw_texts from DB in original scan order
   const { data: rows } = await admin
     .from('book_summaries')
     .select('id, raw_text, summary')
     .in('id', body.ids)
     .eq('user_id', lineUserId);
 
-  // Sort rows to match the original part order (same order as body.ids)
   const sortedRows = body.ids
     .map((id) => rows?.find((r) => r.id === id))
-    .filter(Boolean) as Array<{ id: string; raw_text: string | null; summary: string }>;
+    .filter(Boolean) as Array<{ id: string; raw_text: string | null; summary: string | null }>;
 
   const hasRawTexts = sortedRows.some((r) => r.raw_text);
 
-  // Use raw_texts when available (more accurate), fall back to summaries
-  const partsText = sortedRows
+  // Combine all text in reading order (raw_text preferred, fall back to summary)
+  // Label as "スキャンバッチN" so Claude knows these are scan boundaries, not book chapters
+  const combinedText = sortedRows
     .map((r, i) => {
       const content = (r.raw_text ?? r.summary ?? body.summaries[i] ?? '').trim();
-      return `【パート${i + 1}】\n${content}`;
+      return `--- スキャンバッチ ${i + 1}/${sortedRows.length} ---\n${content}`;
     })
     .join('\n\n');
 
+  // Target summary length = total raw_text chars / 3
+  const totalRawChars = sortedRows.reduce(
+    (sum, r) => sum + (r.raw_text?.length ?? r.summary?.length ?? 0),
+    0,
+  );
+  const targetChars = Math.round(totalRawChars / 3);
   const bookLabel = body.title ? `「${body.title}」` : 'この本';
-  const sourceNote = hasRawTexts ? '各章の文字起こし原文' : '各章の要約';
-  const chapterCount = sortedRows.length;
-  const targetChars = chapterCount * 800;
-  // 各点70〜100文字として必要な点数を算出
-  const targetPoints = Math.ceil(targetChars / 80);
+  const sourceLabel = hasRawTexts ? '文字起こし原文' : '要約';
 
   const response = await anthropic.messages.create({
     model: 'claude-opus-4-7',
@@ -66,24 +68,30 @@ export async function POST(request: NextRequest) {
     messages: [
       {
         role: 'user',
-        content: `以下は${bookLabel}を${chapterCount}章に分けて読んだ${sourceNote}です。
+        content: `以下は${bookLabel}を複数回に分けてスキャンした${sourceLabel}です。
+「スキャンバッチN」という区切りはスキャン作業上の都合であり、本の章とは無関係です。
 
-${partsText}
+${combinedText}
 
-これらをひとつにまとめ、本全体の内容を構造的に整理してください。
+【指示】
+本文中に登場する実際の章・節・見出し構造（「第○章」「はじめに」「Chapter」等）を見つけ、
+その章立てに従って要約を作成してください。
+明確な章見出しがない場合はトピックで適切に区切ってください。
 
 【出力形式（厳守）】
-- 箇条書き${targetPoints}点以上
-- 各点は70〜100文字程度
-- 合計${targetChars}文字以上（1章あたり800文字相当）になるよう十分な情報量を盛り込むこと
-- 読み上げを想定しているので、記号（•、★、【】など）は使わず、数字と句読点のみ
-- 形式: "1. ～。\\n2. ～。\\n..." のように各行を番号付きで
+- 各章（または節・トピック）の見出しを1行で書き、直後からその章の要約を番号付き箇条書きで書く
+- 見出し行の例: "第1章 お金の本質。" のように句点で終わらせる
+- 箇条書きは全章を通した連番（1. 2. 3. …）
+- 各点は60〜100文字程度
+- 読み上げを想定しているので、記号（•、★、■、【】など）は使わず、数字と句読点のみ
 
-【まとめ方の方針】
-- 全${chapterCount}章それぞれのキーメッセージを漏らさず盛り込む（1章あたり平均${Math.ceil(targetPoints / chapterCount)}点以上）
-- 重複している内容は統合してよいが、各章の固有の内容は必ず残す
-- 本の全体像（何について書かれた本か、誰に向けた本か）が冒頭でわかるようにする
-- 著者の主張・結論・根拠・具体的なエピソード・データ・事例を含める
+【文字数ルール】
+- 合計目標: ${targetChars}文字程度（文字起こし全体 ${totalRawChars}文字の3分の1）
+- 各章の配分は文字起こし量に比例させる（長い章は多め、短い章は少なめ）
+
+【要約の方針】
+- 著者の主張・結論・根拠・具体的エピソード・データを含める
+- スキャンバッチの区切りは完全に無視し、本の流れに沿って構成する
 - この本を読んでいない人でも内容が正確に伝わるよう詳しく書く
 - 抽象的な概念より行動できる具体的な内容を優先する`,
       },
@@ -97,9 +105,9 @@ ${partsText}
 
   const mergedSummary = textBlock.text.trim();
 
-  // Merge raw_texts into one block for the merged row
+  // Preserve combined raw_text for future re-use
   const mergedRawText = hasRawTexts
-    ? sortedRows.map((r, i) => `【パート${i + 1}】\n${r.raw_text ?? ''}`).join('\n\n')
+    ? sortedRows.map((r, i) => `--- スキャンバッチ ${i + 1} ---\n${r.raw_text ?? ''}`).join('\n\n')
     : null;
 
   // Insert merged row
@@ -120,7 +128,7 @@ ${partsText}
     return NextResponse.json({ error: insertError.message }, { status: 500 });
   }
 
-  // Delete old part rows
+  // Delete original scan-batch rows
   await admin
     .from('book_summaries')
     .delete()
