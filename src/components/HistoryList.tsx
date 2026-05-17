@@ -9,6 +9,7 @@ interface SummaryItem {
   summary: string;
   image_count: number;
   created_at: string;
+  cover_image: string | null;
 }
 
 export default function HistoryList() {
@@ -65,6 +66,20 @@ export default function HistoryList() {
               onClick={() => setExpanded(isOpen ? null : item.id)}
               className="w-full px-4 py-3 flex items-center gap-3 text-left"
             >
+              {/* Cover thumbnail */}
+              <div className="w-10 h-14 rounded-lg overflow-hidden shrink-0 bg-indigo-50 flex items-center justify-center">
+                {item.cover_image ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`data:image/jpeg;base64,${item.cover_image}`}
+                    alt="cover"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <BookOpen size={16} className="text-indigo-300" />
+                )}
+              </div>
+
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold text-gray-800 truncate">
                   {item.title || '無題'}

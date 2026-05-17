@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { Upload, Play, Pause, Square, Loader2, X, BookOpen, Volume2, Save, ScanLine, AlertCircle } from 'lucide-react';
+import { Upload, Play, Pause, Square, Loader2, X, BookOpen, Volume2, Save, ScanLine, AlertCircle, BookMarked } from 'lucide-react';
 
 interface UploadedImage {
   id: string;
@@ -118,6 +118,7 @@ export default function BookSummarizer() {
         body: JSON.stringify({
           images: images.map((img) => ({ data: img.data, mediaType: img.mediaType })),
           title: title || undefined,
+          coverImage: coverImage?.data ?? undefined,
         }),
       });
       const json = await res.json();
@@ -175,6 +176,14 @@ export default function BookSummarizer() {
     setCoverImage(null);
     setImages([]);
     setTitle('');
+    setSummary('');
+    setError('');
+    stopAudio();
+  };
+
+  // 表紙・タイトルはそのまま、ページだけリセットして続きを読む
+  const continueReading = () => {
+    setImages([]);
     setSummary('');
     setError('');
     stopAudio();
@@ -351,14 +360,25 @@ export default function BookSummarizer() {
             </p>
           )}
 
-          {/* Save / New */}
-          <div className="flex gap-2 pt-1 border-t border-gray-100">
-            <p className="text-xs text-gray-400 flex items-center gap-1 flex-1">
+          {/* Save / Continue / New */}
+          <div className="pt-1 border-t border-gray-100 space-y-2">
+            <p className="text-xs text-gray-400 flex items-center gap-1">
               <Save size={12} />自動保存済み
             </p>
-            <button onClick={reset} className="text-xs text-indigo-600 font-medium">
-              新しい本を読む
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={continueReading}
+                className="flex-1 py-2 rounded-xl bg-indigo-50 text-indigo-700 text-xs font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
+              >
+                <BookMarked size={14} />続きを読む
+              </button>
+              <button
+                onClick={reset}
+                className="flex-1 py-2 rounded-xl bg-gray-100 text-gray-600 text-xs font-semibold active:scale-95 transition-transform"
+              >
+                新しい本
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { images?: Array<{ data: string; mediaType: string }>; title?: string };
+  let body: { images?: Array<{ data: string; mediaType: string }>; title?: string; coverImage?: string };
   try {
     body = await request.json();
   } catch {
@@ -82,6 +82,7 @@ export async function POST(request: NextRequest) {
     title: body.title?.trim() || null,
     summary,
     image_count: body.images.length,
+    cover_image: body.coverImage ?? null,
   });
 
   return NextResponse.json({ summary });
