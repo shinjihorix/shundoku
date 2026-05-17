@@ -1,7 +1,10 @@
 'use client';
 
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
-import { Trash2, ChevronDown, ChevronUp, Loader2, BookOpen, Play, Pause, Square, Volume2, Camera, Merge } from 'lucide-react';
+import {
+  Trash2, ChevronDown, ChevronUp, Loader2, BookOpen,
+  Play, Pause, Square, Volume2, Camera, Merge, Search, X, RefreshCw,
+} from 'lucide-react';
 
 interface SummaryItem {
   id: string;
@@ -10,6 +13,7 @@ interface SummaryItem {
   image_count: number;
   created_at: string;
   cover_image: string | null;
+  has_raw_text: boolean;
 }
 
 interface BookGroup {
@@ -42,8 +46,7 @@ async function compressCover(file: File): Promise<string> {
       if (!ctx) { reject(new Error('Canvas not supported')); return; }
       ctx.drawImage(img, 0, 0, width, height);
       URL.revokeObjectURL(objectUrl);
-      const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
-      resolve(dataUrl.split(',')[1]);
+      resolve(canvas.toDataURL('image/jpeg', JPEG_QUALITY).split(',')[1]);
     };
     img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('Image load failed')); };
     img.src = objectUrl;
@@ -53,23 +56,38 @@ async function compressCover(file: File): Promise<string> {
 export default function HistoryList() {
   const [items, setItems] = useState<SummaryItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState('');
+  const [searching, setSearching] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [uploadingCover, setUploadingCover] = useState<string | null>(null); // group key
-  const [merging, setMerging] = useState<string | null>(null); // group key
+  const [uploadingCover, setUploadingCover] = useState<string | null>(null);
+  const [merging, setMerging] = useState<string | null>(null);
+  const [reSummarizing, setReSummarizing] = useState<string | null>(null); // item id
 
-  // TTS state – only one item plays at a time
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [audioState, setAudioState] = useState<AudioState>('idle');
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string>('');
 
-  useEffect(() => {
-    fetch('/api/history')
-      .then((r) => r.json())
-      .then((d) => setItems(d.items ?? []))
-      .finally(() => setLoading(false));
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchItems = useCallback(async (q = '') => {
+    setSearching(true);
+    const url = q ? `/api/history?q=${encodeURIComponent(q)}` : '/api/history';
+    const d = await fetch(url).then((r) => r.json()).catch(() => ({ items: [] }));
+    setItems(d.items ?? []);
+    setLoading(false);
+    setSearching(false);
   }, []);
+
+  useEffect(() => { fetchItems(); }, [fetchItems]);
+
+  // Debounced search
+  const handleSearch = (value: string) => {
+    setQuery(value);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => fetchItems(value), 400);
+  };
 
   const groups = useMemo<BookGroup[]>(() => {
     const map = new Map<string, SummaryItem[]>();
@@ -77,12 +95,9 @@ export default function HistoryList() {
 
     for (const item of items) {
       const key = item.title?.trim();
-      if (!key) {
-        ungrouped.push(item);
-      } else {
-        if (!map.has(key)) map.set(key, []);
-        map.get(key)!.push(item);
-      }
+      if (!key) { ungrouped.push(item); continue; }
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(item);
     }
 
     const result: BookGroup[] = [];
@@ -91,7 +106,6 @@ export default function HistoryList() {
       const sorted = [...titleItems].sort(
         (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
       );
-      // Use the most recently set cover (last non-null)
       const coverItem = [...sorted].reverse().find((i) => i.cover_image);
       result.push({
         key: title,
@@ -105,8 +119,7 @@ export default function HistoryList() {
 
     for (const item of ungrouped) {
       result.push({
-        key: item.id,
-        title: null,
+        key: item.id, title: null,
         cover_image: item.cover_image,
         parts: [item],
         totalImages: item.image_count,
@@ -127,25 +140,13 @@ export default function HistoryList() {
   };
 
   const playItem = async (item: SummaryItem) => {
-    if (playingId === item.id && audioState === 'playing') {
-      audioRef.current?.pause();
-      setAudioState('paused');
-      return;
-    }
-    if (playingId === item.id && audioState === 'paused' && audioRef.current) {
-      audioRef.current.play();
-      setAudioState('playing');
-      return;
-    }
+    if (playingId === item.id && audioState === 'playing') { audioRef.current?.pause(); setAudioState('paused'); return; }
+    if (playingId === item.id && audioState === 'paused' && audioRef.current) { audioRef.current.play(); setAudioState('playing'); return; }
     stopAudio();
     setPlayingId(item.id);
     setAudioState('loading');
     try {
-      const res = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: item.summary }),
-      });
+      const res = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: item.summary }) });
       if (!res.ok) throw new Error('音声生成に失敗しました');
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -156,20 +157,13 @@ export default function HistoryList() {
       audio.onerror = () => { setAudioState('idle'); setPlayingId(null); };
       await audio.play();
       setAudioState('playing');
-    } catch {
-      setAudioState('idle');
-      setPlayingId(null);
-    }
+    } catch { setAudioState('idle'); setPlayingId(null); }
   };
 
   const deleteItem = async (id: string) => {
     if (playingId === id) stopAudio();
     setDeleting(id);
-    await fetch('/api/history', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
-    });
+    await fetch('/api/history', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
     setItems((prev) => prev.filter((i) => i.id !== id));
     setDeleting(null);
   };
@@ -191,7 +185,6 @@ export default function HistoryList() {
       });
       if (!res.ok) throw new Error('まとめに失敗しました');
       const { item } = await res.json();
-      // Replace all parts with the merged item in local state
       setItems((prev) => {
         const filtered = prev.filter((i) => !group.parts.some((p) => p.id === i.id));
         return [item, ...filtered];
@@ -203,6 +196,24 @@ export default function HistoryList() {
     }
   }, []);
 
+  const reSummarize = useCallback(async (item: SummaryItem) => {
+    setReSummarizing(item.id);
+    try {
+      const res = await fetch('/api/re-summarize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? '再要約に失敗しました');
+      setItems((prev) => prev.map((i) => i.id === item.id ? { ...i, summary: json.summary } : i));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '再要約に失敗しました');
+    } finally {
+      setReSummarizing(null);
+    }
+  }, []);
+
   const handleCoverUpload = useCallback(async (group: BookGroup, file: File) => {
     setUploadingCover(group.key);
     try {
@@ -210,46 +221,48 @@ export default function HistoryList() {
       const body = group.title
         ? { title: group.title, cover_image: data }
         : { id: group.parts[0].id, cover_image: data };
-
-      await fetch('/api/history', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      // Update local state – apply to all parts of this group
-      setItems((prev) =>
-        prev.map((item) => {
-          const belongsToGroup = group.title
-            ? item.title === group.title
-            : item.id === group.parts[0].id;
-          return belongsToGroup ? { ...item, cover_image: data } : item;
-        }),
-      );
+      await fetch('/api/history', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      setItems((prev) => prev.map((item) => {
+        const belongs = group.title ? item.title === group.title : item.id === group.parts[0].id;
+        return belongs ? { ...item, cover_image: data } : item;
+      }));
     } finally {
       setUploadingCover(null);
     }
   }, []);
 
   if (loading) {
-    return (
-      <div className="flex justify-center py-16">
-        <Loader2 className="animate-spin text-gray-400" size={24} />
-      </div>
-    );
-  }
-
-  if (groups.length === 0) {
-    return (
-      <div className="flex flex-col items-center py-16 text-gray-400 gap-3">
-        <BookOpen size={40} strokeWidth={1} />
-        <p className="text-sm">まだ要約がありません</p>
-      </div>
-    );
+    return <div className="flex justify-center py-16"><Loader2 className="animate-spin text-gray-400" size={24} /></div>;
   }
 
   return (
     <div className="p-4 space-y-3 max-w-lg mx-auto">
+
+      {/* Search bar */}
+      <div className="relative">
+        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => handleSearch(e.target.value)}
+          placeholder="タイトル・内容を検索..."
+          className="w-full pl-8 pr-8 py-2 rounded-xl border border-gray-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+        />
+        {query && (
+          <button onClick={() => handleSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400">
+            <X size={14} />
+          </button>
+        )}
+        {searching && <Loader2 size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-indigo-400 animate-spin" />}
+      </div>
+
+      {groups.length === 0 && (
+        <div className="flex flex-col items-center py-16 text-gray-400 gap-3">
+          <BookOpen size={40} strokeWidth={1} />
+          <p className="text-sm">{query ? '一致する本がありません' : 'まだ要約がありません'}</p>
+        </div>
+      )}
+
       {groups.map((group) => {
         const isOpen = expanded === group.key;
         const isMultiPart = group.parts.length > 1;
@@ -260,25 +273,15 @@ export default function HistoryList() {
 
         return (
           <div key={group.key} className="bg-white rounded-2xl shadow-sm overflow-hidden">
-            {/* Header row */}
             <div className="px-4 py-3 flex items-center gap-3">
-              {/* Cover thumbnail – tappable to upload */}
-              <label
-                htmlFor={inputId}
-                className="relative w-10 h-14 rounded-lg overflow-hidden shrink-0 bg-indigo-50 flex items-center justify-center cursor-pointer group"
-                title="表紙を登録"
-              >
+              {/* Cover thumbnail */}
+              <label htmlFor={inputId} className="relative w-10 h-14 rounded-lg overflow-hidden shrink-0 bg-indigo-50 flex items-center justify-center cursor-pointer group" title="表紙を登録">
                 {isUploadingThisGroup ? (
                   <Loader2 size={16} className="text-indigo-400 animate-spin" />
                 ) : group.cover_image ? (
                   <>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={`data:image/jpeg;base64,${group.cover_image}`}
-                      alt="cover"
-                      className="w-full h-full object-cover"
-                    />
-                    {/* hover overlay */}
+                    <img src={`data:image/jpeg;base64,${group.cover_image}`} alt="cover" className="w-full h-full object-cover" />
                     <div className="absolute inset-0 bg-black/30 opacity-0 group-active:opacity-100 flex items-center justify-center transition-opacity">
                       <Camera size={12} className="text-white" />
                     </div>
@@ -289,27 +292,13 @@ export default function HistoryList() {
                     <span className="text-[8px] text-indigo-300 leading-none">登録</span>
                   </div>
                 )}
-                <input
-                  id={inputId}
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp,image/gif"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) handleCoverUpload(group, file);
-                    e.target.value = '';
-                  }}
-                />
+                <input id={inputId} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCoverUpload(group, f); e.target.value = ''; }} />
               </label>
 
-              {/* Title + meta – tappable to expand */}
-              <button
-                onClick={() => setExpanded(isOpen ? null : group.key)}
-                className="flex-1 min-w-0 text-left"
-              >
-                <p className="text-sm font-semibold text-gray-800 truncate">
-                  {group.title || '無題'}
-                </p>
+              {/* Title + meta */}
+              <button onClick={() => setExpanded(isOpen ? null : group.key)} className="flex-1 min-w-0 text-left">
+                <p className="text-sm font-semibold text-gray-800 truncate">{group.title || '無題'}</p>
                 <p className="text-xs text-gray-400 mt-0.5">
                   {dateStr} · {group.totalImages}枚
                   {isMultiPart && (
@@ -320,36 +309,26 @@ export default function HistoryList() {
                 </p>
               </button>
 
-              {anyPartPlaying && !isOpen && (
-                <Volume2 size={14} className="text-green-500 shrink-0 animate-pulse" />
-              )}
-
+              {anyPartPlaying && !isOpen && <Volume2 size={14} className="text-green-500 shrink-0 animate-pulse" />}
               <button onClick={() => setExpanded(isOpen ? null : group.key)}>
-                {isOpen
-                  ? <ChevronUp size={16} className="text-gray-400 shrink-0" />
-                  : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
+                {isOpen ? <ChevronUp size={16} className="text-gray-400 shrink-0" /> : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
               </button>
             </div>
 
-            {/* Expanded content */}
             {isOpen && (
               <div className="border-t border-gray-50">
 
-                {/* Merge button – multi-part only */}
+                {/* Merge button */}
                 {isMultiPart && (
                   <div className="px-4 py-3 border-b border-gray-50">
                     {merging === group.key ? (
                       <div className="flex items-center gap-2 text-xs text-indigo-500">
-                        <Loader2 size={13} className="animate-spin" />
-                        AIがまとめています...（少々お待ちください）
+                        <Loader2 size={13} className="animate-spin" />AIがまとめています...（少々お待ちください）
                       </div>
                     ) : (
-                      <button
-                        onClick={() => mergeParts(group)}
-                        className="flex items-center gap-2 w-full px-3 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold active:scale-95 transition-transform justify-center"
-                      >
-                        <Merge size={14} />
-                        全{group.parts.length}パートを1つにまとめる
+                      <button onClick={() => mergeParts(group)}
+                        className="flex items-center gap-2 w-full px-3 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold active:scale-95 transition-transform justify-center">
+                        <Merge size={14} />全{group.parts.length}パートを1つにまとめる
                       </button>
                     )}
                     <p className="text-[10px] text-gray-400 mt-1.5 text-center">
@@ -360,14 +339,12 @@ export default function HistoryList() {
 
                 {group.parts.map((item, idx) => {
                   const isThisPlaying = playingId === item.id;
+                  const isReSummarizing = reSummarizing === item.id;
                   const lines = item.summary.split('\n').map((l) => l.trim()).filter(Boolean);
                   const partDate = new Date(item.created_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' });
 
                   return (
-                    <div
-                      key={item.id}
-                      className={`px-4 py-3 space-y-2 ${idx < group.parts.length - 1 ? 'border-b border-gray-50' : ''}`}
-                    >
+                    <div key={item.id} className={`px-4 py-3 space-y-2 ${idx < group.parts.length - 1 ? 'border-b border-gray-50' : ''}`}>
                       {isMultiPart && (
                         <p className="text-[11px] font-semibold text-indigo-500">
                           パート {idx + 1}
@@ -383,16 +360,10 @@ export default function HistoryList() {
                           </button>
                         ) : isThisPlaying && audioState === 'playing' ? (
                           <>
-                            <button
-                              onClick={() => playItem(item)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-yellow-500 text-white text-xs font-semibold active:scale-95 transition-transform"
-                            >
+                            <button onClick={() => playItem(item)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-yellow-500 text-white text-xs font-semibold active:scale-95 transition-transform">
                               <Pause size={13} />一時停止
                             </button>
-                            <button
-                              onClick={stopAudio}
-                              className="p-1.5 rounded-lg bg-gray-100 text-gray-500 active:scale-95 transition-transform"
-                            >
+                            <button onClick={stopAudio} className="p-1.5 rounded-lg bg-gray-100 text-gray-500 active:scale-95 transition-transform">
                               <Square size={13} />
                             </button>
                             <span className="text-xs text-green-600 flex items-center gap-1">
@@ -401,45 +372,50 @@ export default function HistoryList() {
                           </>
                         ) : isThisPlaying && audioState === 'paused' ? (
                           <>
-                            <button
-                              onClick={() => playItem(item)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-semibold active:scale-95 transition-transform"
-                            >
+                            <button onClick={() => playItem(item)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-semibold active:scale-95 transition-transform">
                               <Play size={13} />再開
                             </button>
-                            <button
-                              onClick={stopAudio}
-                              className="p-1.5 rounded-lg bg-gray-100 text-gray-500 active:scale-95 transition-transform"
-                            >
+                            <button onClick={stopAudio} className="p-1.5 rounded-lg bg-gray-100 text-gray-500 active:scale-95 transition-transform">
                               <Square size={13} />
                             </button>
                           </>
                         ) : (
-                          <button
-                            onClick={() => playItem(item)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-semibold active:scale-95 transition-transform"
-                          >
+                          <button onClick={() => playItem(item)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-semibold active:scale-95 transition-transform">
                             <Play size={13} />読み上げ
                           </button>
                         )}
                       </div>
 
-                      {/* Summary lines */}
+                      {/* Summary */}
                       <ol className="space-y-1.5">
                         {lines.map((line, i) => (
                           <li key={i} className="text-sm text-gray-700 leading-relaxed">{line}</li>
                         ))}
                       </ol>
 
-                      {/* Delete */}
-                      <button
-                        onClick={() => deleteItem(item.id)}
-                        disabled={deleting === item.id}
-                        className="flex items-center gap-1 text-xs text-red-400 hover:text-red-600 disabled:opacity-50"
-                      >
-                        {deleting === item.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                        {isMultiPart ? 'このパートを削除' : '削除'}
-                      </button>
+                      {/* Footer actions */}
+                      <div className="flex items-center gap-3 pt-0.5">
+                        {item.has_raw_text && (
+                          <button
+                            onClick={() => reSummarize(item)}
+                            disabled={isReSummarizing}
+                            className="flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-600 disabled:opacity-50"
+                          >
+                            {isReSummarizing
+                              ? <Loader2 size={12} className="animate-spin" />
+                              : <RefreshCw size={12} />}
+                            再要約
+                          </button>
+                        )}
+                        <button
+                          onClick={() => deleteItem(item.id)}
+                          disabled={deleting === item.id}
+                          className="flex items-center gap-1 text-xs text-red-400 hover:text-red-600 disabled:opacity-50"
+                        >
+                          {deleting === item.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                          {isMultiPart ? 'このパートを削除' : '削除'}
+                        </button>
+                      </div>
                     </div>
                   );
                 })}

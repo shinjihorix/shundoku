@@ -9,13 +9,23 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  const { searchParams } = new URL(request.url);
+  const q = searchParams.get('q')?.trim() ?? '';
+
   const admin = createAdminClient();
-  const { data, error } = await admin
+
+  let query = admin
     .from('book_summaries')
-    .select('id, title, summary, image_count, created_at, cover_image')
+    .select('id, title, summary, image_count, created_at, cover_image, has_raw_text:raw_text.not.is(null)')
     .eq('user_id', lineUserId)
     .order('created_at', { ascending: false })
     .limit(50);
+
+  if (q) {
+    query = query.or(`title.ilike.%${q}%,summary.ilike.%${q}%,raw_text.ilike.%${q}%`);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -46,7 +56,6 @@ export async function PATCH(request: NextRequest) {
   const admin = createAdminClient();
 
   if (body.title) {
-    // Update all parts of this book at once
     await admin
       .from('book_summaries')
       .update({ cover_image: body.cover_image })
