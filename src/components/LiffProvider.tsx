@@ -1,17 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { BookOpen, Loader2 } from 'lucide-react';
 
 export default function LiffProvider() {
   const router = useRouter();
-  const [debugInfo, setDebugInfo] = useState('');
 
   useEffect(() => {
     async function init() {
       const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
-      setDebugInfo(`LIFF ID: ${liffId ?? '(未設定)'} | URL: ${window.location.href}`);
 
       const liff = (await import('@line/liff')).default;
       await liff.init({ liffId: liffId! });
@@ -35,15 +33,10 @@ export default function LiffProvider() {
 
       if (res.ok) {
         router.replace('/home');
-      } else {
-        const errJson = await res.json();
-        setDebugInfo((prev) => `${prev} | AuthErr: ${JSON.stringify(errJson)}`);
       }
     }
 
-    init().catch((err) => {
-      setDebugInfo((prev) => `${prev} | Error: ${err?.message ?? String(err)}`);
-    });
+    init().catch(console.error);
   }, [router]);
 
   return (
@@ -56,11 +49,6 @@ export default function LiffProvider() {
           <Loader2 size={14} className="animate-spin" />
           LINEで認証中...
         </p>
-        {debugInfo && (
-          <p className="text-xs text-gray-400 break-all text-left bg-white rounded-xl p-3 shadow-sm">
-            {debugInfo}
-          </p>
-        )}
       </div>
     </div>
   );
