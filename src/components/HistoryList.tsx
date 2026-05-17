@@ -142,6 +142,8 @@ export default function HistoryList() {
   const [audioState, setAudioState] = useState<AudioState>('idle');
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string>('');
+  const chunksRef = useRef<string[]>([]);
+  const chunkIndexRef = useRef<number>(0);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchItems = useCallback(async (q = '') => {
@@ -201,8 +203,60 @@ export default function HistoryList() {
     audioRef.current?.pause();
     audioRef.current = null;
     if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = ''; }
+    chunksRef.current = [];
+    chunkIndexRef.current = 0;
     setAudioState('idle');
     setPlayingId(null);
+  };
+
+  /** テキストを改行境界で ~3800 字以内のチャンクに分割 */
+  const splitChunks = (text: string, maxLen = 3800): string[] => {
+    const lines = text.split('\n');
+    const chunks: string[] = [];
+    let cur = '';
+    for (const line of lines) {
+      const candidate = cur ? cur + '\n' + line : line;
+      if (candidate.length > maxLen && cur) {
+        chunks.push(cur);
+        cur = line;
+      } else {
+        cur = candidate;
+      }
+    }
+    if (cur) chunks.push(cur);
+    return chunks;
+  };
+
+  const playChunk = async (chunk: string, itemId: string) => {
+    setAudioState('loading');
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: chunk }),
+      });
+      if (!res.ok) throw new Error('音声生成に失敗しました');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = url;
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => {
+        const next = chunkIndexRef.current + 1;
+        if (next < chunksRef.current.length) {
+          chunkIndexRef.current = next;
+          playChunk(chunksRef.current[next], itemId);
+        } else {
+          stopAudio();
+        }
+      };
+      audio.onerror = () => stopAudio();
+      await audio.play();
+      setAudioState('playing');
+    } catch {
+      stopAudio();
+    }
   };
 
   const playItem = async (item: SummaryItem) => {
@@ -212,20 +266,10 @@ export default function HistoryList() {
     if (playingId === item.id && audioState === 'paused' && audioRef.current) { audioRef.current.play(); setAudioState('playing'); return; }
     stopAudio();
     setPlayingId(item.id);
-    setAudioState('loading');
-    try {
-      const res = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
-      if (!res.ok) throw new Error('音声生成に失敗しました');
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      audioUrlRef.current = url;
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onended = () => { setAudioState('idle'); setPlayingId(null); };
-      audio.onerror = () => { setAudioState('idle'); setPlayingId(null); };
-      await audio.play();
-      setAudioState('playing');
-    } catch { setAudioState('idle'); setPlayingId(null); }
+    const chunks = splitChunks(text);
+    chunksRef.current = chunks;
+    chunkIndexRef.current = 0;
+    await playChunk(chunks[0], item.id);
   };
 
   const deleteItem = async (id: string) => {
