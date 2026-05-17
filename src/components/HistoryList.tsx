@@ -59,6 +59,20 @@ function rawPreview(text: string): string {
   return text.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 5).join('\n');
 }
 
+/** 先頭の番号（"1. " "78. " など）を除去する */
+function stripLeadingNumber(line: string): string {
+  return line.replace(/^\d+\.\s*/, '');
+}
+
+function summaryToLines(summary: string): string[] {
+  return summary.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
+/** 読み上げ用テキスト：番号なし・改行区切り */
+function summaryForTTS(summary: string): string {
+  return summaryToLines(summary).map(stripLeadingNumber).join('\n');
+}
+
 // ─── マージ確認ダイアログ ─────────────────────────────────────
 function MergeConfirmDialog({
   group,
@@ -192,7 +206,7 @@ export default function HistoryList() {
   };
 
   const playItem = async (item: SummaryItem) => {
-    const text = item.summary;
+    const text = item.summary ? summaryForTTS(item.summary) : null;
     if (!text) return;
     if (playingId === item.id && audioState === 'playing') { audioRef.current?.pause(); setAudioState('paused'); return; }
     if (playingId === item.id && audioState === 'paused' && audioRef.current) { audioRef.current.play(); setAudioState('playing'); return; }
@@ -382,7 +396,7 @@ export default function HistoryList() {
                   const hasSummary = !!item.summary;
                   const hasRawText = !!item.raw_text;
                   const rawExpanded = expandedRawText.has(item.id);
-                  const summaryLines = item.summary?.split('\n').map((l) => l.trim()).filter(Boolean) ?? [];
+                  const summaryLines = item.summary ? summaryToLines(item.summary).map(stripLeadingNumber) : [];
                   const partDate = new Date(item.created_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' });
 
                   return (
