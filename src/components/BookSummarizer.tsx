@@ -13,6 +13,34 @@ interface UploadedImage {
 type AudioState = 'idle' | 'loading' | 'playing' | 'paused';
 
 const MAX_IMAGES = 20;
+const MAX_PX = 1280; // Claude Vision はこれ以上の解像度は不要
+const JPEG_QUALITY = 0.82;
+
+/** Canvas で長辺1280px・JPEG圧縮してから base64 化 */
+async function compressToJpeg(file: File): Promise<{ data: string; preview: string }> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > MAX_PX || height > MAX_PX) {
+        if (width >= height) { height = Math.round((height * MAX_PX) / width); width = MAX_PX; }
+        else { width = Math.round((width * MAX_PX) / height); height = MAX_PX; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Canvas not supported')); return; }
+      ctx.drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(objectUrl);
+      const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+      resolve({ data: dataUrl.split(',')[1], preview: dataUrl });
+    };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('Image load failed')); };
+    img.src = objectUrl;
+  });
+}
 
 export default function BookSummarizer() {
   const [coverImage, setCoverImage] = useState<UploadedImage | null>(null);
@@ -26,27 +54,13 @@ export default function BookSummarizer() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string>('');
 
-  const toUploadedImage = (file: File): Promise<UploadedImage> =>
-    new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const dataUrl = e.target?.result as string;
-        resolve({
-          id: crypto.randomUUID(),
-          data: dataUrl.split(',')[1],
-          mediaType: file.type,
-          preview: dataUrl,
-        });
-      };
-      reader.readAsDataURL(file);
-    });
-
   const handleCoverFile = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     const file = files[0];
     if (!allowed.includes(file.type)) return;
-    const img = await toUploadedImage(file);
+    const { data, preview } = await compressToJpeg(file);
+    const img: UploadedImage = { id: crypto.randomUUID(), data, mediaType: 'image/jpeg', preview };
     setCoverImage(img);
     // Auto-scan cover immediately
     setScanning(true);
@@ -67,28 +81,21 @@ export default function BookSummarizer() {
     }
   }, []);
 
-  const handlePageFiles = useCallback((files: FileList | null) => {
+  const handlePageFiles = useCallback(async (files: FileList | null) => {
     if (!files) return;
     const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    Array.from(files).forEach((file) => {
-      if (!allowed.includes(file.type)) return;
+    const validFiles = Array.from(files).filter((f) => allowed.includes(f.type));
+    for (const file of validFiles) {
       setImages((prev) => {
         if (prev.length >= MAX_IMAGES) return prev;
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const dataUrl = e.target?.result as string;
-          setImages((p) => {
-            if (p.length >= MAX_IMAGES) return p;
-            return [
-              ...p,
-              { id: crypto.randomUUID(), data: dataUrl.split(',')[1], mediaType: file.type, preview: dataUrl },
-            ];
-          });
-        };
-        reader.readAsDataURL(file);
-        return prev;
+        return prev; // placeholder; actual add happens after compress
       });
-    });
+      const { data, preview } = await compressToJpeg(file);
+      setImages((prev) => {
+        if (prev.length >= MAX_IMAGES) return prev;
+        return [...prev, { id: crypto.randomUUID(), data, mediaType: 'image/jpeg', preview }];
+      });
+    }
   }, []);
 
   const handleDrop = useCallback(
