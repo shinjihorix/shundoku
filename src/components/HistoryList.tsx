@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
-import { Trash2, ChevronDown, ChevronUp, Loader2, BookOpen, Play, Pause, Square, Volume2, Camera } from 'lucide-react';
+import { Trash2, ChevronDown, ChevronUp, Loader2, BookOpen, Play, Pause, Square, Volume2, Camera, Merge } from 'lucide-react';
 
 interface SummaryItem {
   id: string;
@@ -56,6 +56,7 @@ export default function HistoryList() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [uploadingCover, setUploadingCover] = useState<string | null>(null); // group key
+  const [merging, setMerging] = useState<string | null>(null); // group key
 
   // TTS state – only one item plays at a time
   const [playingId, setPlayingId] = useState<string | null>(null);
@@ -172,6 +173,35 @@ export default function HistoryList() {
     setItems((prev) => prev.filter((i) => i.id !== id));
     setDeleting(null);
   };
+
+  const mergeParts = useCallback(async (group: BookGroup) => {
+    if (group.parts.length < 2) return;
+    setMerging(group.key);
+    try {
+      const res = await fetch('/api/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ids: group.parts.map((p) => p.id),
+          summaries: group.parts.map((p) => p.summary),
+          title: group.title ?? undefined,
+          cover_image: group.cover_image ?? undefined,
+          total_images: group.totalImages,
+        }),
+      });
+      if (!res.ok) throw new Error('まとめに失敗しました');
+      const { item } = await res.json();
+      // Replace all parts with the merged item in local state
+      setItems((prev) => {
+        const filtered = prev.filter((i) => !group.parts.some((p) => p.id === i.id));
+        return [item, ...filtered];
+      });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'まとめに失敗しました');
+    } finally {
+      setMerging(null);
+    }
+  }, []);
 
   const handleCoverUpload = useCallback(async (group: BookGroup, file: File) => {
     setUploadingCover(group.key);
@@ -304,6 +334,30 @@ export default function HistoryList() {
             {/* Expanded content */}
             {isOpen && (
               <div className="border-t border-gray-50">
+
+                {/* Merge button – multi-part only */}
+                {isMultiPart && (
+                  <div className="px-4 py-3 border-b border-gray-50">
+                    {merging === group.key ? (
+                      <div className="flex items-center gap-2 text-xs text-indigo-500">
+                        <Loader2 size={13} className="animate-spin" />
+                        AIがまとめています...（少々お待ちください）
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => mergeParts(group)}
+                        className="flex items-center gap-2 w-full px-3 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold active:scale-95 transition-transform justify-center"
+                      >
+                        <Merge size={14} />
+                        全{group.parts.length}パートを1つにまとめる
+                      </button>
+                    )}
+                    <p className="text-[10px] text-gray-400 mt-1.5 text-center">
+                      AIが重複を除去して全体を再構成します · 元のパートは削除されます
+                    </p>
+                  </div>
+                )}
+
                 {group.parts.map((item, idx) => {
                   const isThisPlaying = playingId === item.id;
                   const lines = item.summary.split('\n').map((l) => l.trim()).filter(Boolean);
