@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import {
   Trash2, ChevronDown, ChevronUp, Loader2, BookOpen,
-  Play, Pause, Square, Volume2, Camera, Merge, Search, X, RefreshCw, FileText,
+  Play, Pause, Square, Volume2, Camera, Merge, Search, X, RefreshCw, FileText, Eye, EyeOff, AlertTriangle,
 } from 'lucide-react';
 
 interface SummaryItem {
@@ -53,9 +53,62 @@ async function compressCover(file: File): Promise<string> {
   });
 }
 
-/** raw_text の冒頭5行だけ返す */
 function rawPreview(text: string): string {
   return text.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 5).join('\n');
+}
+
+/** 確認ダイアログ（章の削除確認用） */
+function MergeConfirmDialog({
+  group,
+  onConfirm,
+  onCancel,
+}: {
+  group: BookGroup;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-end justify-center p-4">
+      <div className="bg-white rounded-2xl p-5 w-full max-w-sm space-y-4">
+        <div className="flex items-start gap-3">
+          <AlertTriangle size={20} className="text-amber-500 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold text-gray-800">全章をまとめて要約しますか？</p>
+            <p className="text-xs text-gray-500 mt-1">
+              全{group.parts.length}章の文字起こしからAIが要約を生成します。
+              まとめ後、各章のデータは削除されます。
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-amber-50 rounded-xl px-3 py-2.5 space-y-1">
+          <p className="text-xs font-semibold text-amber-700">実行前に確認してください</p>
+          {group.parts.map((p, i) => (
+            <p key={p.id} className="text-xs text-amber-600 flex items-center gap-1.5">
+              <span className="w-4 h-4 rounded-full bg-amber-200 text-amber-700 text-[9px] flex items-center justify-center shrink-0 font-bold">{i + 1}</span>
+              第{i + 1}章 · {p.image_count}枚
+              {p.raw_text ? ' · 文字起こし済み ✓' : ' · 文字起こし未取得'}
+            </p>
+          ))}
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-600 font-semibold"
+          >
+            キャンセル
+          </button>
+          <button
+            onClick={onConfirm}
+            className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold"
+          >
+            まとめて要約する
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function HistoryList() {
@@ -67,7 +120,9 @@ export default function HistoryList() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [uploadingCover, setUploadingCover] = useState<string | null>(null);
   const [merging, setMerging] = useState<string | null>(null);
-  const [generatingSummary, setGeneratingSummary] = useState<string | null>(null); // item id
+  const [confirmMergeGroup, setConfirmMergeGroup] = useState<BookGroup | null>(null);
+  const [generatingSummary, setGeneratingSummary] = useState<string | null>(null);
+  const [expandedRawText, setExpandedRawText] = useState<Set<string>>(new Set());
 
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [audioState, setAudioState] = useState<AudioState>('idle');
@@ -90,6 +145,14 @@ export default function HistoryList() {
     setQuery(value);
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     searchTimerRef.current = setTimeout(() => fetchItems(value), 400);
+  };
+
+  const toggleRawText = (id: string) => {
+    setExpandedRawText((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
   };
 
   const groups = useMemo<BookGroup[]>(() => {
@@ -169,8 +232,8 @@ export default function HistoryList() {
     setDeleting(null);
   };
 
-  const mergeParts = useCallback(async (group: BookGroup) => {
-    if (group.parts.length < 2) return;
+  const executeMerge = useCallback(async (group: BookGroup) => {
+    setConfirmMergeGroup(null);
     setMerging(group.key);
     try {
       const res = await fetch('/api/merge', {
@@ -238,6 +301,15 @@ export default function HistoryList() {
 
   return (
     <div className="p-4 space-y-3 max-w-lg mx-auto">
+
+      {/* Merge confirmation dialog */}
+      {confirmMergeGroup && (
+        <MergeConfirmDialog
+          group={confirmMergeGroup}
+          onConfirm={() => executeMerge(confirmMergeGroup)}
+          onCancel={() => setConfirmMergeGroup(null)}
+        />
+      )}
 
       {/* Search bar */}
       <div className="relative">
@@ -324,7 +396,7 @@ export default function HistoryList() {
             {isOpen && (
               <div className="border-t border-gray-50">
 
-                {/* Merge button */}
+                {/* Merge button – requires confirmation */}
                 {isMultiPart && (
                   <div className="px-4 py-3 border-b border-gray-50">
                     {merging === group.key ? (
@@ -332,13 +404,15 @@ export default function HistoryList() {
                         <Loader2 size={13} className="animate-spin" />AIがまとめています...（少々お待ちください）
                       </div>
                     ) : (
-                      <button onClick={() => mergeParts(group)}
-                        className="flex items-center gap-2 w-full px-3 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold active:scale-95 transition-transform justify-center">
+                      <button
+                        onClick={() => setConfirmMergeGroup(group)}
+                        className="flex items-center gap-2 w-full px-3 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold active:scale-95 transition-transform justify-center"
+                      >
                         <Merge size={14} />全{group.parts.length}章をまとめて要約する
                       </button>
                     )}
                     <p className="text-[10px] text-gray-400 mt-1.5 text-center">
-                      AIが全章の文字起こしから要約を生成します · 各章は削除されます
+                      ページ漏れがないか各章の文字起こしを確認してからまとめてください
                     </p>
                   </div>
                 )}
@@ -347,6 +421,8 @@ export default function HistoryList() {
                   const isThisPlaying = playingId === item.id;
                   const isGenerating = generatingSummary === item.id;
                   const hasSummary = !!item.summary;
+                  const hasRawText = !!item.raw_text;
+                  const rawExpanded = expandedRawText.has(item.id);
                   const summaryLines = item.summary?.split('\n').map((l) => l.trim()).filter(Boolean) ?? [];
                   const partDate = new Date(item.created_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' });
 
@@ -359,7 +435,37 @@ export default function HistoryList() {
                         </p>
                       )}
 
-                      {hasSummary ? (
+                      {/* Raw text viewer (always available when hasRawText) */}
+                      {hasRawText && (
+                        <div>
+                          <button
+                            onClick={() => toggleRawText(item.id)}
+                            className="flex items-center gap-1 text-[11px] text-indigo-500 font-semibold mb-1"
+                          >
+                            {rawExpanded ? <EyeOff size={11} /> : <Eye size={11} />}
+                            {rawExpanded ? '文字起こしを閉じる' : '文字起こしを確認する'}
+                            <span className="text-gray-400 font-normal">（{item.image_count}枚分）</span>
+                          </button>
+                          {rawExpanded && (
+                            <div className="max-h-60 overflow-y-auto rounded-xl bg-gray-50 px-3 py-2.5 mb-2">
+                              <p className="text-xs text-gray-600 leading-relaxed whitespace-pre-wrap">{item.raw_text}</p>
+                            </div>
+                          )}
+                          {!rawExpanded && !hasSummary && (
+                            <div className="rounded-xl bg-gray-50 px-3 py-2">
+                              <p className="text-[10px] text-amber-600 font-semibold mb-1 flex items-center gap-1">
+                                <FileText size={10} />文字起こし済み・要約未生成
+                              </p>
+                              <p className="text-xs text-gray-500 leading-relaxed whitespace-pre-wrap">
+                                {rawPreview(item.raw_text!)}
+                                {item.raw_text!.split('\n').filter(Boolean).length > 5 && '…'}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {hasSummary && (
                         <>
                           {/* TTS controls */}
                           <div className="flex items-center gap-2">
@@ -395,44 +501,30 @@ export default function HistoryList() {
                             )}
                           </div>
 
-                          {/* Summary */}
                           <ol className="space-y-1.5">
                             {summaryLines.map((line, i) => (
                               <li key={i} className="text-sm text-gray-700 leading-relaxed">{line}</li>
                             ))}
                           </ol>
                         </>
-                      ) : (
-                        <>
-                          {/* No summary yet – show raw text preview */}
-                          <div className="rounded-xl bg-gray-50 px-3 py-2">
-                            <p className="text-[10px] text-amber-600 font-semibold mb-1 flex items-center gap-1">
-                              <FileText size={10} />文字起こし（要約未生成）
-                            </p>
-                            <p className="text-xs text-gray-500 leading-relaxed whitespace-pre-wrap">
-                              {item.raw_text ? rawPreview(item.raw_text) : ''}
-                              {item.raw_text && item.raw_text.split('\n').filter(Boolean).length > 5 && '…'}
-                            </p>
-                          </div>
+                      )}
 
-                          {/* Generate summary button */}
-                          {!isMultiPart && (
-                            <button
-                              onClick={() => generateSummary(item)}
-                              disabled={isGenerating}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-semibold active:scale-95 transition-transform disabled:opacity-50"
-                            >
-                              {isGenerating
-                                ? <><Loader2 size={13} className="animate-spin" />要約生成中...</>
-                                : <><RefreshCw size={13} />この章の要約を生成</>}
-                            </button>
-                          )}
-                        </>
+                      {/* Generate summary (no summary yet, single part) */}
+                      {!hasSummary && !isMultiPart && hasRawText && (
+                        <button
+                          onClick={() => generateSummary(item)}
+                          disabled={isGenerating}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-semibold active:scale-95 transition-transform disabled:opacity-50"
+                        >
+                          {isGenerating
+                            ? <><Loader2 size={13} className="animate-spin" />要約生成中...</>
+                            : <><RefreshCw size={13} />この章の要約を生成</>}
+                        </button>
                       )}
 
                       {/* Footer actions */}
                       <div className="flex items-center gap-3 pt-0.5">
-                        {hasSummary && item.raw_text && (
+                        {hasSummary && hasRawText && (
                           <button
                             onClick={() => generateSummary(item)}
                             disabled={isGenerating}
