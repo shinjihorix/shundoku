@@ -54,35 +54,36 @@ export async function POST(request: NextRequest) {
     .join('\n\n');
 
   const bookLabel = body.title ? `「${body.title}」` : 'この本';
-  const sourceNote = hasRawTexts
-    ? '各パートの文字起こし原文'
-    : '各パートの要約';
+  const sourceNote = hasRawTexts ? '各章の文字起こし原文' : '各章の要約';
+  const chapterCount = sortedRows.length;
+  const targetChars = chapterCount * 800;
+  // 各点70〜100文字として必要な点数を算出
+  const targetPoints = Math.ceil(targetChars / 80);
 
   const response = await anthropic.messages.create({
     model: 'claude-opus-4-7',
-    max_tokens: 4096,
+    max_tokens: 8192,
     messages: [
       {
         role: 'user',
-        content: `以下は${bookLabel}を複数章に分けて読んだ${sourceNote}です。
+        content: `以下は${bookLabel}を${chapterCount}章に分けて読んだ${sourceNote}です。
 
 ${partsText}
 
 これらをひとつにまとめ、本全体の内容を構造的に整理してください。
 
 【出力形式（厳守）】
-- 箇条書き15〜20点
-- 各点は60〜100文字程度
-- 合計1200文字以上になるよう十分な情報量を盛り込むこと
+- 箇条書き${targetPoints}点以上
+- 各点は70〜100文字程度
+- 合計${targetChars}文字以上（1章あたり800文字相当）になるよう十分な情報量を盛り込むこと
 - 読み上げを想定しているので、記号（•、★、【】など）は使わず、数字と句読点のみ
 - 形式: "1. ～。\\n2. ～。\\n..." のように各行を番号付きで
 
 【まとめ方の方針】
-- 重複している内容は統合して1点にまとめる
+- 全${chapterCount}章それぞれのキーメッセージを漏らさず盛り込む（1章あたり平均${Math.ceil(targetPoints / chapterCount)}点以上）
+- 重複している内容は統合してよいが、各章の固有の内容は必ず残す
 - 本の全体像（何について書かれた本か、誰に向けた本か）が冒頭でわかるようにする
-- 著者の最も伝えたい主張・結論・根拠を優先する
-- 各章のキーメッセージを漏らさず盛り込む
-- 具体的なエピソード・データ・事例も簡潔に含める
+- 著者の主張・結論・根拠・具体的なエピソード・データ・事例を含める
 - この本を読んでいない人でも内容が正確に伝わるよう詳しく書く
 - 抽象的な概念より行動できる具体的な内容を優先する`,
       },
