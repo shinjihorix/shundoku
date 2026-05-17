@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
 
   let query = admin
     .from('book_summaries')
-    .select('id, title, summary, image_count, created_at, cover_image, has_raw_text:raw_text.not.is(null)')
+    .select('id, title, summary, image_count, created_at, cover_image, raw_text')
     .eq('user_id', lineUserId)
     .order('created_at', { ascending: false })
     .limit(50);
@@ -34,7 +34,6 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ items: data });
 }
 
-// Update cover_image: by title (all parts) or by single id
 export async function PATCH(request: NextRequest) {
   const cookie = request.cookies.get(LIFF_COOKIE_NAME);
   const lineUserId = cookie ? verifyCookieValue(cookie.value) : null;

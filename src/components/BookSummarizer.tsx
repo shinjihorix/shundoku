@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { Upload, Play, Pause, Square, Loader2, X, BookOpen, Volume2, Save, ScanLine, AlertCircle, BookMarked } from 'lucide-react';
+import { Upload, Loader2, X, BookOpen, ScanLine, AlertCircle, BookMarked, FileText } from 'lucide-react';
 
 interface UploadedImage {
   id: string;
@@ -10,13 +10,10 @@ interface UploadedImage {
   preview: string;
 }
 
-type AudioState = 'idle' | 'loading' | 'playing' | 'paused';
-
 const MAX_IMAGES = 20;
-const MAX_PX = 1280; // Claude Vision はこれ以上の解像度は不要
+const MAX_PX = 1280;
 const JPEG_QUALITY = 0.82;
 
-/** Canvas で長辺1280px・JPEG圧縮してから base64 化 */
 async function compressToJpeg(file: File): Promise<{ data: string; preview: string }> {
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);
@@ -28,8 +25,7 @@ async function compressToJpeg(file: File): Promise<{ data: string; preview: stri
         else { width = Math.round((width * MAX_PX) / height); height = MAX_PX; }
       }
       const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
+      canvas.width = width; canvas.height = height;
       const ctx = canvas.getContext('2d');
       if (!ctx) { reject(new Error('Canvas not supported')); return; }
       ctx.drawImage(img, 0, 0, width, height);
@@ -46,13 +42,11 @@ export default function BookSummarizer() {
   const [coverImage, setCoverImage] = useState<UploadedImage | null>(null);
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [title, setTitle] = useState('');
-  const [summary, setSummary] = useState('');
-  const [summarizing, setSummarizing] = useState(false);
+  const [transcription, setTranscription] = useState('');
+  const [processing, setProcessing] = useState(false);
   const [scanning, setScanning] = useState(false);
-  const [audioState, setAudioState] = useState<AudioState>('idle');
   const [error, setError] = useState('');
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioUrlRef = useRef<string>('');
+  const coverFileRef = useRef<HTMLInputElement>(null);
 
   const handleCoverFile = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -62,7 +56,6 @@ export default function BookSummarizer() {
     const { data, preview } = await compressToJpeg(file);
     const img: UploadedImage = { id: crypto.randomUUID(), data, mediaType: 'image/jpeg', preview };
     setCoverImage(img);
-    // Auto-scan cover immediately
     setScanning(true);
     setError('');
     try {
@@ -86,10 +79,6 @@ export default function BookSummarizer() {
     const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     const validFiles = Array.from(files).filter((f) => allowed.includes(f.type));
     for (const file of validFiles) {
-      setImages((prev) => {
-        if (prev.length >= MAX_IMAGES) return prev;
-        return prev; // placeholder; actual add happens after compress
-      });
       const { data, preview } = await compressToJpeg(file);
       setImages((prev) => {
         if (prev.length >= MAX_IMAGES) return prev;
@@ -105,12 +94,11 @@ export default function BookSummarizer() {
 
   const removeImage = (id: string) => setImages((prev) => prev.filter((img) => img.id !== id));
 
-  const summarize = async () => {
+  const transcribe = async () => {
     if (images.length === 0) return;
-    setSummarizing(true);
+    setProcessing(true);
     setError('');
-    setSummary('');
-    stopAudio();
+    setTranscription('');
     try {
       const res = await fetch('/api/summarize', {
         method: 'POST',
@@ -122,74 +110,29 @@ export default function BookSummarizer() {
         }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? '要約に失敗しました');
-      setSummary(json.summary);
+      if (!res.ok) throw new Error(json.error ?? '文字起こしに失敗しました');
+      setTranscription(json.transcription);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '要約に失敗しました');
+      setError(err instanceof Error ? err.message : '文字起こしに失敗しました');
     } finally {
-      setSummarizing(false);
+      setProcessing(false);
     }
   };
-
-  const stopAudio = () => {
-    audioRef.current?.pause();
-    audioRef.current = null;
-    if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = ''; }
-    setAudioState('idle');
-  };
-
-  const playAudio = async () => {
-    if (!summary) return;
-    if (audioState === 'paused' && audioRef.current) {
-      audioRef.current.play();
-      setAudioState('playing');
-      return;
-    }
-    stopAudio();
-    setAudioState('loading');
-    setError('');
-    try {
-      const res = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: summary }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? '音声生成に失敗しました');
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      audioUrlRef.current = url;
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onended = () => setAudioState('idle');
-      audio.onerror = () => { setError('再生に失敗しました'); setAudioState('idle'); };
-      await audio.play();
-      setAudioState('playing');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '音声生成に失敗しました');
-      setAudioState('idle');
-    }
-  };
-
-  const pauseAudio = () => { audioRef.current?.pause(); setAudioState('paused'); };
 
   const reset = () => {
     setCoverImage(null);
     setImages([]);
     setTitle('');
-    setSummary('');
+    setTranscription('');
     setError('');
-    stopAudio();
   };
 
-  // 表紙・タイトルはそのまま、ページだけリセットして続きを読む
   const continueReading = () => {
     setImages([]);
-    setSummary('');
+    setTranscription('');
     setError('');
-    stopAudio();
   };
 
-  const summaryLines = summary.split('\n').map((l) => l.trim()).filter(Boolean);
   const atLimit = images.length >= MAX_IMAGES;
 
   return (
@@ -199,7 +142,7 @@ export default function BookSummarizer() {
       <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
         <button
           className="w-full px-4 py-3 flex items-center gap-3 text-left"
-          onClick={() => document.getElementById('cover-file-input')?.click()}
+          onClick={() => coverFileRef.current?.click()}
           disabled={scanning}
         >
           <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center shrink-0">
@@ -225,14 +168,13 @@ export default function BookSummarizer() {
           )}
         </button>
         <input
-          id="cover-file-input"
+          ref={coverFileRef}
           type="file"
           accept="image/jpeg,image/png,image/webp,image/gif"
           className="hidden"
           onChange={(e) => handleCoverFile(e.target.files)}
         />
 
-        {/* Title field */}
         <div className="px-4 pb-3">
           <input
             type="text"
@@ -267,7 +209,7 @@ export default function BookSummarizer() {
             <p className="text-xs text-gray-400 mt-1">
               最大 {MAX_IMAGES}枚まで · 現在 {images.length}枚 · JPG/PNG/WEBP
             </p>
-            <p className="text-xs text-gray-400">（150ページの本は10〜20枚ずつ分けて要約）</p>
+            <p className="text-xs text-gray-400">（章ごとに10〜20枚ずつ取り込んで下さい）</p>
           </>
         )}
         <input
@@ -280,12 +222,11 @@ export default function BookSummarizer() {
         />
       </div>
 
-      {/* Batch hint */}
       {images.length > 10 && (
         <div className="flex items-start gap-2 bg-amber-50 rounded-xl px-3 py-2.5">
           <AlertCircle size={14} className="text-amber-500 shrink-0 mt-0.5" />
           <p className="text-xs text-amber-700">
-            枚数が多いと処理が遅くなります。章ごとに分けて複数回要約すると快適です。
+            枚数が多いと処理が遅くなります。章ごとに分けて複数回取り込むと快適です。
           </p>
         </div>
       )}
@@ -305,80 +246,50 @@ export default function BookSummarizer() {
         </div>
       )}
 
-      {/* Summarize button */}
+      {/* Transcribe button */}
       <button
-        onClick={summarize}
-        disabled={images.length === 0 || summarizing}
+        onClick={transcribe}
+        disabled={images.length === 0 || processing}
         className="w-full py-3 rounded-2xl bg-indigo-600 text-white font-semibold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition-transform"
       >
-        {summarizing
-          ? <><Loader2 size={18} className="animate-spin" />要約中...</>
-          : <><BookOpen size={18} />要約する ({images.length}枚)</>}
+        {processing
+          ? <><Loader2 size={18} className="animate-spin" />文字起こし中...</>
+          : <><FileText size={18} />文字起こしする（{images.length}枚）</>}
       </button>
 
       {error && <div className="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3">{error}</div>}
 
-      {/* Summary */}
-      {summary && (
+      {/* Transcription result */}
+      {transcription && (
         <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3">
           <h2 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5">
-            <BookOpen size={15} />
-            {title || '要約'}
+            <FileText size={15} />
+            文字起こし確認
+            {title && <span className="text-gray-400 font-normal">— {title}</span>}
           </h2>
-          <ol className="space-y-2">
-            {summaryLines.map((line, i) => (
-              <li key={i} className="text-sm text-gray-700 leading-relaxed">{line}</li>
-            ))}
-          </ol>
 
-          {/* Audio controls */}
-          <div className="flex gap-2 pt-1">
-            {audioState === 'idle' || audioState === 'paused' ? (
-              <button onClick={playAudio} className="flex-1 py-2.5 rounded-xl bg-green-600 text-white text-sm font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition-transform">
-                <Play size={16} />{audioState === 'paused' ? '再開' : '読み上げ'}
-              </button>
-            ) : audioState === 'playing' ? (
-              <button onClick={pauseAudio} className="flex-1 py-2.5 rounded-xl bg-yellow-500 text-white text-sm font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition-transform">
-                <Pause size={16} />一時停止
-              </button>
-            ) : (
-              <button disabled className="flex-1 py-2.5 rounded-xl bg-gray-200 text-gray-500 text-sm font-semibold flex items-center justify-center gap-1.5">
-                <Loader2 size={16} className="animate-spin" />音声生成中...
-              </button>
-            )}
-            {(audioState === 'playing' || audioState === 'paused') && (
-              <button onClick={stopAudio} className="py-2.5 px-3 rounded-xl bg-gray-200 text-gray-600 active:scale-95 transition-transform">
-                <Square size={16} />
-              </button>
-            )}
+          <div className="max-h-64 overflow-y-auto rounded-xl bg-gray-50 px-3 py-2.5">
+            <p className="text-xs text-gray-600 leading-relaxed whitespace-pre-wrap">{transcription}</p>
           </div>
 
-          {audioState !== 'idle' && (
-            <p className="text-xs text-gray-400 flex items-center gap-1">
-              <Volume2 size={12} />
-              {audioState === 'loading' ? '音声を生成しています...' : audioState === 'playing' ? '読み上げ中' : '一時停止中'}
-            </p>
-          )}
+          <p className="text-xs text-gray-400 flex items-center gap-1">
+            <BookOpen size={11} />
+            履歴タブから要約を生成できます
+          </p>
 
-          {/* Save / Continue / New */}
-          <div className="pt-1 border-t border-gray-100 space-y-2">
-            <p className="text-xs text-gray-400 flex items-center gap-1">
-              <Save size={12} />自動保存済み
-            </p>
-            <div className="flex gap-2">
-              <button
-                onClick={continueReading}
-                className="flex-1 py-2 rounded-xl bg-indigo-50 text-indigo-700 text-xs font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
-              >
-                <BookMarked size={14} />続きを読む
-              </button>
-              <button
-                onClick={reset}
-                className="flex-1 py-2 rounded-xl bg-gray-100 text-gray-600 text-xs font-semibold active:scale-95 transition-transform"
-              >
-                新しい本
-              </button>
-            </div>
+          <div className="pt-1 border-t border-gray-100 flex gap-2">
+            <button
+              onClick={continueReading}
+              className="flex-1 py-2 rounded-xl bg-indigo-50 text-indigo-700 text-xs font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
+            >
+              <BookMarked size={14} />続きの章を取り込む
+            </button>
+            <button
+              onClick={reset}
+              className="flex-1 py-2 rounded-xl bg-gray-100 text-gray-600 text-xs font-semibold active:scale-95 transition-transform"
+            >
+              新しい本
+            </button>
           </div>
         </div>
       )}
