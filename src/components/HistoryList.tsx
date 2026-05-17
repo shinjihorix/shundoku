@@ -57,7 +57,13 @@ function extractPageNumbers(rawText: string): number[] {
     if (jpPage) { addPage(found, jpPage[1]); }
   }
 
-  return Array.from(found).sort((a, b) => a - b);
+  // 外れ値除去：中央値から100ページ以上離れた値を除外
+  // （本文中の金額・番号が単独行に現れた場合の誤検出対策）
+  const arr = Array.from(found).sort((a, b) => a - b);
+  if (arr.length < 3) return arr;
+  const median = arr[Math.floor(arr.length / 2)];
+  const filtered = arr.filter((n) => Math.abs(n - median) <= 100);
+  return filtered.length >= 2 ? filtered : arr;
 }
 
 function addPage(set: Set<number>, str: string) {
