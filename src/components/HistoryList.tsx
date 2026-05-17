@@ -85,6 +85,9 @@ function MergeConfirmDialog({
               パート{i + 1} · {p.image_count}枚
             </p>
           ))}
+          <p className="text-xs text-gray-500 font-semibold pt-1.5 border-t border-gray-200 mt-1">
+            合計 {group.parts.reduce((sum, p) => sum + p.image_count, 0)}枚
+          </p>
         </div>
 
         {/* Actions */}
