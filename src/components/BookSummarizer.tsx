@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { Upload, Play, Pause, Square, Loader2, X, BookOpen, Volume2, Save } from 'lucide-react';
+import { Upload, Play, Pause, Square, Loader2, X, BookOpen, Volume2, Save, ScanLine, AlertCircle } from 'lucide-react';
 
 interface UploadedImage {
   id: string;
@@ -12,36 +12,88 @@ interface UploadedImage {
 
 type AudioState = 'idle' | 'loading' | 'playing' | 'paused';
 
+const MAX_IMAGES = 20;
+
 export default function BookSummarizer() {
+  const [coverImage, setCoverImage] = useState<UploadedImage | null>(null);
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [title, setTitle] = useState('');
   const [summary, setSummary] = useState('');
   const [summarizing, setSummarizing] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [audioState, setAudioState] = useState<AudioState>('idle');
   const [error, setError] = useState('');
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string>('');
 
-  const handleFiles = useCallback((files: FileList | null) => {
+  const toUploadedImage = (file: File): Promise<UploadedImage> =>
+    new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        resolve({
+          id: crypto.randomUUID(),
+          data: dataUrl.split(',')[1],
+          mediaType: file.type,
+          preview: dataUrl,
+        });
+      };
+      reader.readAsDataURL(file);
+    });
+
+  const handleCoverFile = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    const file = files[0];
+    if (!allowed.includes(file.type)) return;
+    const img = await toUploadedImage(file);
+    setCoverImage(img);
+    // Auto-scan cover immediately
+    setScanning(true);
+    setError('');
+    try {
+      const res = await fetch('/api/detect-cover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: { data: img.data, mediaType: img.mediaType } }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? '読み取り失敗');
+      if (json.display) setTitle(json.display);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '表紙の読み取りに失敗しました');
+    } finally {
+      setScanning(false);
+    }
+  }, []);
+
+  const handlePageFiles = useCallback((files: FileList | null) => {
     if (!files) return;
     const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     Array.from(files).forEach((file) => {
       if (!allowed.includes(file.type)) return;
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const dataUrl = e.target?.result as string;
-        setImages((prev) => [
-          ...prev,
-          { id: crypto.randomUUID(), data: dataUrl.split(',')[1], mediaType: file.type, preview: dataUrl },
-        ]);
-      };
-      reader.readAsDataURL(file);
+      setImages((prev) => {
+        if (prev.length >= MAX_IMAGES) return prev;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const dataUrl = e.target?.result as string;
+          setImages((p) => {
+            if (p.length >= MAX_IMAGES) return p;
+            return [
+              ...p,
+              { id: crypto.randomUUID(), data: dataUrl.split(',')[1], mediaType: file.type, preview: dataUrl },
+            ];
+          });
+        };
+        reader.readAsDataURL(file);
+        return prev;
+      });
     });
   }, []);
 
   const handleDrop = useCallback(
-    (e: React.DragEvent) => { e.preventDefault(); handleFiles(e.dataTransfer.files); },
-    [handleFiles],
+    (e: React.DragEvent) => { e.preventDefault(); handlePageFiles(e.dataTransfer.files); },
+    [handlePageFiles],
   );
 
   const removeImage = (id: string) => setImages((prev) => prev.filter((img) => img.id !== id));
@@ -113,6 +165,7 @@ export default function BookSummarizer() {
   const pauseAudio = () => { audioRef.current?.pause(); setAudioState('paused'); };
 
   const reset = () => {
+    setCoverImage(null);
     setImages([]);
     setTitle('');
     setSummary('');
@@ -121,37 +174,105 @@ export default function BookSummarizer() {
   };
 
   const summaryLines = summary.split('\n').map((l) => l.trim()).filter(Boolean);
+  const atLimit = images.length >= MAX_IMAGES;
 
   return (
     <div className="p-4 space-y-4 max-w-lg mx-auto">
-      {/* Title input */}
-      <input
-        type="text"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        placeholder="本のタイトル（任意）"
-        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
-      />
 
-      {/* Upload area */}
+      {/* Cover scan section */}
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+        <button
+          className="w-full px-4 py-3 flex items-center gap-3 text-left"
+          onClick={() => document.getElementById('cover-file-input')?.click()}
+          disabled={scanning}
+        >
+          <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center shrink-0">
+            {scanning ? (
+              <Loader2 size={20} className="text-indigo-500 animate-spin" />
+            ) : coverImage ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={coverImage.preview} alt="cover" className="w-10 h-10 object-cover rounded-xl" />
+            ) : (
+              <ScanLine size={20} className="text-indigo-400" />
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-gray-800">
+              {scanning ? 'スキャン中...' : '① 表紙をスキャン'}
+            </p>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {scanning ? '題名・著者を読み取っています' : '表紙のスクショをタップして選択 → 自動入力'}
+            </p>
+          </div>
+          {coverImage && !scanning && (
+            <span className="text-xs text-green-600 font-medium shrink-0">完了</span>
+          )}
+        </button>
+        <input
+          id="cover-file-input"
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif"
+          className="hidden"
+          onChange={(e) => handleCoverFile(e.target.files)}
+        />
+
+        {/* Title field */}
+        <div className="px-4 pb-3">
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="題名・著者（自動入力 or 手動）"
+            className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+          />
+        </div>
+      </div>
+
+      {/* Page upload section */}
       <div
-        className="border-2 border-dashed border-gray-300 rounded-2xl p-6 text-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50 transition-colors"
-        onDrop={handleDrop}
+        className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-colors ${
+          atLimit
+            ? 'border-orange-300 bg-orange-50 cursor-not-allowed'
+            : 'border-gray-300 hover:border-indigo-400 hover:bg-indigo-50'
+        }`}
+        onDrop={!atLimit ? handleDrop : undefined}
         onDragOver={(e) => e.preventDefault()}
-        onClick={() => document.getElementById('book-file-input')?.click()}
+        onClick={() => !atLimit && document.getElementById('book-file-input')?.click()}
       >
-        <Upload className="mx-auto mb-2 text-gray-400" size={32} />
-        <p className="text-sm text-gray-600">本のページをタップして選択</p>
-        <p className="text-xs text-gray-400 mt-1">複数枚まとめてOK・JPG/PNG/WEBP</p>
+        <Upload className={`mx-auto mb-2 ${atLimit ? 'text-orange-400' : 'text-gray-400'}`} size={32} />
+        {atLimit ? (
+          <>
+            <p className="text-sm font-semibold text-orange-700">② ページ（最大 {MAX_IMAGES}枚）</p>
+            <p className="text-xs text-orange-600 mt-1">{MAX_IMAGES}枚に達しました。不要な画像を削除してください。</p>
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-gray-600 font-medium">② ページをタップして選択</p>
+            <p className="text-xs text-gray-400 mt-1">
+              最大 {MAX_IMAGES}枚まで · 現在 {images.length}枚 · JPG/PNG/WEBP
+            </p>
+            <p className="text-xs text-gray-400">（150ページの本は10〜20枚ずつ分けて要約）</p>
+          </>
+        )}
         <input
           id="book-file-input"
           type="file"
           accept="image/jpeg,image/png,image/webp,image/gif"
           multiple
           className="hidden"
-          onChange={(e) => handleFiles(e.target.files)}
+          onChange={(e) => handlePageFiles(e.target.files)}
         />
       </div>
+
+      {/* Batch hint */}
+      {images.length > 10 && (
+        <div className="flex items-start gap-2 bg-amber-50 rounded-xl px-3 py-2.5">
+          <AlertCircle size={14} className="text-amber-500 shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-700">
+            枚数が多いと処理が遅くなります。章ごとに分けて複数回要約すると快適です。
+          </p>
+        </div>
+      )}
 
       {/* Previews */}
       {images.length > 0 && (
@@ -174,7 +295,9 @@ export default function BookSummarizer() {
         disabled={images.length === 0 || summarizing}
         className="w-full py-3 rounded-2xl bg-indigo-600 text-white font-semibold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition-transform"
       >
-        {summarizing ? <><Loader2 size={18} className="animate-spin" />要約中...</> : <><BookOpen size={18} />要約する</>}
+        {summarizing
+          ? <><Loader2 size={18} className="animate-spin" />要約中...</>
+          : <><BookOpen size={18} />要約する ({images.length}枚)</>}
       </button>
 
       {error && <div className="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3">{error}</div>}
