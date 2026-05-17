@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
   const admin = createAdminClient();
   const { data, error } = await admin
     .from('book_summaries')
-    .select('id, title, summary, image_count, created_at')
+    .select('id, title, summary, image_count, created_at, cover_image')
     .eq('user_id', lineUserId)
     .order('created_at', { ascending: false })
     .limit(50);
@@ -22,6 +22,47 @@ export async function GET(request: NextRequest) {
   }
 
   return NextResponse.json({ items: data });
+}
+
+// Update cover_image: by title (all parts) or by single id
+export async function PATCH(request: NextRequest) {
+  const cookie = request.cookies.get(LIFF_COOKIE_NAME);
+  const lineUserId = cookie ? verifyCookieValue(cookie.value) : null;
+  if (!lineUserId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  let body: { id?: string; title?: string; cover_image?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  if (!body.cover_image) {
+    return NextResponse.json({ error: 'cover_image required' }, { status: 400 });
+  }
+
+  const admin = createAdminClient();
+
+  if (body.title) {
+    // Update all parts of this book at once
+    await admin
+      .from('book_summaries')
+      .update({ cover_image: body.cover_image })
+      .eq('user_id', lineUserId)
+      .eq('title', body.title);
+  } else if (body.id) {
+    await admin
+      .from('book_summaries')
+      .update({ cover_image: body.cover_image })
+      .eq('id', body.id)
+      .eq('user_id', lineUserId);
+  } else {
+    return NextResponse.json({ error: 'id or title required' }, { status: 400 });
+  }
+
+  return NextResponse.json({ ok: true });
 }
 
 export async function DELETE(request: NextRequest) {

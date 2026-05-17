@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState, useRef, useMemo } from 'react';
-import { Trash2, ChevronDown, ChevronUp, Loader2, BookOpen, Play, Pause, Square, Volume2 } from 'lucide-react';
+import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
+import { Trash2, ChevronDown, ChevronUp, Loader2, BookOpen, Play, Pause, Square, Volume2, Camera } from 'lucide-react';
 
 interface SummaryItem {
   id: string;
@@ -16,18 +16,46 @@ interface BookGroup {
   key: string;
   title: string | null;
   cover_image: string | null;
-  parts: SummaryItem[]; // sorted oldest first
+  parts: SummaryItem[];
   totalImages: number;
   latestDate: Date;
 }
 
 type AudioState = 'idle' | 'loading' | 'playing' | 'paused';
 
+const MAX_PX = 800;
+const JPEG_QUALITY = 0.82;
+
+async function compressCover(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > MAX_PX || height > MAX_PX) {
+        if (width >= height) { height = Math.round((height * MAX_PX) / width); width = MAX_PX; }
+        else { width = Math.round((width * MAX_PX) / height); height = MAX_PX; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Canvas not supported')); return; }
+      ctx.drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(objectUrl);
+      const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+      resolve(dataUrl.split(',')[1]);
+    };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('Image load failed')); };
+    img.src = objectUrl;
+  });
+}
+
 export default function HistoryList() {
   const [items, setItems] = useState<SummaryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [uploadingCover, setUploadingCover] = useState<string | null>(null); // group key
 
   // TTS state – only one item plays at a time
   const [playingId, setPlayingId] = useState<string | null>(null);
@@ -42,7 +70,6 @@ export default function HistoryList() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Group items by title (null-title items stay as individual entries)
   const groups = useMemo<BookGroup[]>(() => {
     const map = new Map<string, SummaryItem[]>();
     const ungrouped: SummaryItem[] = [];
@@ -63,10 +90,12 @@ export default function HistoryList() {
       const sorted = [...titleItems].sort(
         (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
       );
+      // Use the most recently set cover (last non-null)
+      const coverItem = [...sorted].reverse().find((i) => i.cover_image);
       result.push({
         key: title,
         title,
-        cover_image: sorted[sorted.length - 1].cover_image ?? sorted[0].cover_image ?? null,
+        cover_image: coverItem?.cover_image ?? null,
         parts: sorted,
         totalImages: sorted.reduce((s, i) => s + i.image_count, 0),
         latestDate: new Date(sorted[sorted.length - 1].created_at),
@@ -84,9 +113,7 @@ export default function HistoryList() {
       });
     }
 
-    // Most recently updated first
     result.sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
-
     return result;
   }, [items]);
 
@@ -146,6 +173,34 @@ export default function HistoryList() {
     setDeleting(null);
   };
 
+  const handleCoverUpload = useCallback(async (group: BookGroup, file: File) => {
+    setUploadingCover(group.key);
+    try {
+      const data = await compressCover(file);
+      const body = group.title
+        ? { title: group.title, cover_image: data }
+        : { id: group.parts[0].id, cover_image: data };
+
+      await fetch('/api/history', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      // Update local state – apply to all parts of this group
+      setItems((prev) =>
+        prev.map((item) => {
+          const belongsToGroup = group.title
+            ? item.title === group.title
+            : item.id === group.parts[0].id;
+          return belongsToGroup ? { ...item, cover_image: data } : item;
+        }),
+      );
+    } finally {
+      setUploadingCover(null);
+    }
+  }, []);
+
   if (loading) {
     return (
       <div className="flex justify-center py-16">
@@ -170,29 +225,58 @@ export default function HistoryList() {
         const isMultiPart = group.parts.length > 1;
         const anyPartPlaying = group.parts.some((p) => p.id === playingId);
         const dateStr = group.latestDate.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' });
+        const isUploadingThisGroup = uploadingCover === group.key;
+        const inputId = `cover-input-${group.key}`;
 
         return (
           <div key={group.key} className="bg-white rounded-2xl shadow-sm overflow-hidden">
             {/* Header row */}
-            <button
-              onClick={() => setExpanded(isOpen ? null : group.key)}
-              className="w-full px-4 py-3 flex items-center gap-3 text-left"
-            >
-              {/* Cover thumbnail */}
-              <div className="w-10 h-14 rounded-lg overflow-hidden shrink-0 bg-indigo-50 flex items-center justify-center">
-                {group.cover_image ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={`data:image/jpeg;base64,${group.cover_image}`}
-                    alt="cover"
-                    className="w-full h-full object-cover"
-                  />
+            <div className="px-4 py-3 flex items-center gap-3">
+              {/* Cover thumbnail – tappable to upload */}
+              <label
+                htmlFor={inputId}
+                className="relative w-10 h-14 rounded-lg overflow-hidden shrink-0 bg-indigo-50 flex items-center justify-center cursor-pointer group"
+                title="表紙を登録"
+              >
+                {isUploadingThisGroup ? (
+                  <Loader2 size={16} className="text-indigo-400 animate-spin" />
+                ) : group.cover_image ? (
+                  <>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={`data:image/jpeg;base64,${group.cover_image}`}
+                      alt="cover"
+                      className="w-full h-full object-cover"
+                    />
+                    {/* hover overlay */}
+                    <div className="absolute inset-0 bg-black/30 opacity-0 group-active:opacity-100 flex items-center justify-center transition-opacity">
+                      <Camera size={12} className="text-white" />
+                    </div>
+                  </>
                 ) : (
-                  <BookOpen size={16} className="text-indigo-300" />
+                  <div className="flex flex-col items-center gap-0.5">
+                    <Camera size={13} className="text-indigo-300" />
+                    <span className="text-[8px] text-indigo-300 leading-none">登録</span>
+                  </div>
                 )}
-              </div>
+                <input
+                  id={inputId}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleCoverUpload(group, file);
+                    e.target.value = '';
+                  }}
+                />
+              </label>
 
-              <div className="flex-1 min-w-0">
+              {/* Title + meta – tappable to expand */}
+              <button
+                onClick={() => setExpanded(isOpen ? null : group.key)}
+                className="flex-1 min-w-0 text-left"
+              >
                 <p className="text-sm font-semibold text-gray-800 truncate">
                   {group.title || '無題'}
                 </p>
@@ -204,17 +288,18 @@ export default function HistoryList() {
                     </span>
                   )}
                 </p>
-              </div>
+              </button>
 
-              {/* Playing indicator on collapsed card */}
               {anyPartPlaying && !isOpen && (
                 <Volume2 size={14} className="text-green-500 shrink-0 animate-pulse" />
               )}
 
-              {isOpen
-                ? <ChevronUp size={16} className="text-gray-400 shrink-0" />
-                : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
-            </button>
+              <button onClick={() => setExpanded(isOpen ? null : group.key)}>
+                {isOpen
+                  ? <ChevronUp size={16} className="text-gray-400 shrink-0" />
+                  : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
+              </button>
+            </div>
 
             {/* Expanded content */}
             {isOpen && (
@@ -229,7 +314,6 @@ export default function HistoryList() {
                       key={item.id}
                       className={`px-4 py-3 space-y-2 ${idx < group.parts.length - 1 ? 'border-b border-gray-50' : ''}`}
                     >
-                      {/* Part label (only for multi-part groups) */}
                       {isMultiPart && (
                         <p className="text-[11px] font-semibold text-indigo-500">
                           パート {idx + 1}
